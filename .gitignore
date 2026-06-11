@@ -2,6 +2,12 @@
 public_dataset_a.zip
 public_dataset_upload/
 
+# 预处理数据（太大）
+processed_data/
+
+# 结果文件
+results/
+
 # macOS
 .DS_Store
 *.DS_Store
@@ -32,6 +38,7 @@ env/
 
 # 环境变量
 .env
+.env.local
 .env.local
 
 # 模型缓存
