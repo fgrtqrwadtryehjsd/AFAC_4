@@ -4,7 +4,6 @@
 例如题目提到"第47条"，直接定位到该条款文本。
 """
 import re
-from agent.indexer import DocumentIndex
 
 
 # 匹配中文条款编号
@@ -126,19 +125,19 @@ def locate_clauses_in_doc(doc_text: str, clause_refs: list) -> list:
     return results
 
 
-def enrich_evidence_with_clauses(doc_index: DocumentIndex, doc_ids: list, clause_refs: list) -> list:
+def enrich_evidence_with_clauses(get_doc_full_text_fn, doc_ids: list, clause_refs: list) -> list:
     """
     用条款精准定位补充证据
     
-    Returns:
-        额外的证据块列表
+    Args:
+        get_doc_full_text_fn: callable(doc_id) -> full_text
     """
     extra_chunks = []
     if not clause_refs or not doc_ids:
         return extra_chunks
     
     for doc_id in doc_ids:
-        doc_text = doc_index.get_doc_full_text(doc_id)
+        doc_text = get_doc_full_text_fn(doc_id)
         if not doc_text:
             continue
         
@@ -146,7 +145,7 @@ def enrich_evidence_with_clauses(doc_index: DocumentIndex, doc_ids: list, clause
         for loc in located:
             extra_chunks.append({
                 "doc_id": doc_id,
-                "chunk_id": -1,  # 特殊ID表示精准定位
+                "chunk_id": -1,
                 "text": loc["content"],
                 "type": "clause_precise",
             })

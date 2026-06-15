@@ -1,56 +1,34 @@
-"""文档索引与检索模块 V2
+"""RAG 检索模块 + 上下文窗口优化
 
-使用结构化索引 + BM25 + Qwen 语义 Rerank
+核心技术：
+1. RAG：BM25 关键词检索 + 结构化索引辅助
+2. 上下文窗口优化：根据 token 预算动态裁剪证据，优先保留高相关度内容
+3. 多路召回：问题检索 + 选项检索 + 条款精准定位
 """
 import os
+import re
 import json
-import jieba
-from rank_bm25 import BM25Okapi
-from agent.config import PROCESSED_DIR, TOP_K_CHUNKS
-from agent.qwen_client import QwenClient
+import math
+from collections import Counter
+from agent.config import PROCESSED_DIR
+from agent.clause_locator import extract_clause_refs, locate_clauses_in_doc
 
 
 class DocumentIndex:
-    """文档索引管理器 V2"""
+    """文档索引（BM25 + 结构化）"""
 
-    def __init__(self, qwen_client: QwenClient = None):
-        self.documents = {}      # doc_id -> full_text
-        self.doc_meta = {}       # doc_id -> metadata
-        self.chunks = []         # [{doc_id, chunk_id, text, type}]
+    def __init__(self):
+        self.full_texts = {}   # doc_id -> full_text
+        self.chunks = []       # 所有结构化块
         self.bm25 = None
-        self.bm25_corpus = []
-        self.qwen = qwen_client
-        self._loaded = False
+        self.doc_lengths = {}  # doc_id -> char_count
 
     def load(self):
-        """加载预处理文档和结构化索引"""
-        if self._loaded:
-            return
-
-        # 1. 加载全文
-        self._load_full_texts()
-
-        # 2. 加载结构化分块索引
-        index_path = os.path.join(PROCESSED_DIR, "structured_index.json")
-        if os.path.exists(index_path):
-            with open(index_path, "r", encoding="utf-8") as f:
-                index_data = json.load(f)
-            self.doc_meta = index_data.get("doc_meta", {})
-            self.chunks = index_data.get("chunks", [])
-            print(f"  加载结构化索引: {len(self.chunks)} 个块")
-        else:
-            # 降级：固定窗口分块
-            self._build_fixed_chunks()
-
-        # 3. 构建 BM25
-        self._build_bm25()
-        self._loaded = True
-
-    def _load_full_texts(self):
-        """加载全文数据"""
+        """加载文档和索引"""
+        # 加载全文
         for domain in os.listdir(PROCESSED_DIR):
             domain_dir = os.path.join(PROCESSED_DIR, domain)
-            if not os.path.isdir(domain_dir):
+            if not os.path.isdir(domain_dir) or domain in ("compressed_memory", "structured_extracts"):
                 continue
             for root, dirs, files in os.walk(domain_dir):
                 for f in files:
@@ -59,147 +37,167 @@ class DocumentIndex:
                     filepath = os.path.join(root, f)
                     try:
                         with open(filepath, "r", encoding="utf-8") as fh:
-                            doc_data = json.load(fh)
+                            data = json.load(fh)
                         doc_id = os.path.splitext(f)[0]
-                        self.documents[doc_id] = doc_data.get("full_text", "")
+                        text = data.get("full_text", "")
+                        if text:
+                            self.full_texts[doc_id] = text
+                            self.doc_lengths[doc_id] = len(text)
                     except:
                         pass
-        print(f"  加载了 {len(self.documents)} 个文档全文")
 
-    def _build_fixed_chunks(self):
-        """降级：固定窗口分块"""
-        self.chunks = []
-        chunk_id = 0
-        chunk_size = 2000
-        overlap = 200
-        for doc_id, text in self.documents.items():
-            for i in range(0, len(text), chunk_size - overlap):
-                chunk_text = text[i:i + chunk_size]
-                if chunk_text.strip():
-                    self.chunks.append({
-                        "doc_id": doc_id,
-                        "chunk_id": chunk_id,
-                        "text": chunk_text,
-                        "type": "fixed",
-                    })
-                    chunk_id += 1
+        # 加载结构化索引
+        index_path = os.path.join(PROCESSED_DIR, "structured_index.json")
+        if os.path.exists(index_path):
+            with open(index_path, "r", encoding="utf-8") as f:
+                index_data = json.load(f)
+            # 兼容两种格式：list 或 {"chunks": [...]}
+            if isinstance(index_data, dict):
+                self.chunks = index_data.get("chunks", [])
+            elif isinstance(index_data, list):
+                self.chunks = index_data
+
+        # 构建 BM25
+        self._build_bm25()
+        print(f"  加载了 {len(self.full_texts)} 个文档，{len(self.chunks)} 个块")
 
     def _build_bm25(self):
         """构建 BM25 索引"""
-        self.bm25_corpus = []
-        for chunk in self.chunks:
-            tokens = list(jieba.cut(chunk["text"]))
-            self.bm25_corpus.append(tokens)
-        if self.bm25_corpus:
-            self.bm25 = BM25Okapi(self.bm25_corpus)
-            print(f"  BM25 索引构建完成 ({len(self.bm25_corpus)} 块)")
-
-    def search_bm25(self, query: str, doc_ids: list = None, top_k: int = None) -> list:
-        """BM25 检索"""
-        if not self.bm25:
-            return []
-        top_k = top_k or TOP_K_CHUNKS * 2  # 多召回一些给 rerank
-        query_tokens = list(jieba.cut(query))
-        scores = self.bm25.get_scores(query_tokens)
-        
-        candidates = []
-        for idx, score in enumerate(scores):
-            chunk = self.chunks[idx]
-            if doc_ids and chunk["doc_id"] not in doc_ids:
-                continue
-            candidates.append((score, idx, chunk))
-        
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return [c[2] for c in candidates[:top_k]]
-
-    def search_with_rerank(self, query: str, doc_ids: list = None, top_k: int = None) -> list:
-        """
-        BM25 粗召回 + Qwen 精排 (Rerank)
-        
-        流程：
-        1. BM25 召回 top_k*2 候选
-        2. 用 Qwen 判断每个候选与问题的相关性
-        3. 只保留相关证据，按相关度排序
-        """
-        top_k = top_k or TOP_K_CHUNKS
-        
-        # Step 1: BM25 粗召回
-        candidates = self.search_bm25(query, doc_ids, top_k=top_k * 3)
-        
-        if not candidates:
-            return []
-        
-        # Step 2: Qwen Rerank（如果 token 预算充足）
-        if self.qwen and len(candidates) > top_k:
-            candidates = self._qwen_rerank(query, candidates, top_k)
-        
-        return candidates[:top_k]
-
-    def _qwen_rerank(self, query: str, candidates: list, top_k: int) -> list:
-        """用 Qwen 对候选块做相关性判断"""
-        # 为节省 token，只取每块前 300 字做判断
-        excerpts = []
-        for i, chunk in enumerate(candidates):
-            excerpt = chunk["text"][:300]
-            excerpts.append(f"[{i}] 来源:{chunk['doc_id']}\n{excerpt}")
-        
-        prompt = f"""判断以下文档片段与问题的相关性，返回最相关的 {top_k} 个片段编号。
-
-问题：{query}
-
-文档片段：
-{chr(10).join(excerpts[:15])}
-
-请输出最相关的片段编号，用逗号分隔，例如：0,3,7
-只输出编号，不要解释。"""
-
         try:
-            result = self.qwen.chat(
-                [{"role": "user", "content": prompt}],
-                temperature=0.0, max_tokens=50
-            )
-            # 解析输出
-            content = result["content"].strip()
-            indices = [int(x.strip()) for x in content.split(",") if x.strip().isdigit()]
-            indices = [i for i in indices if 0 <= i < len(candidates)]
-            
-            if indices:
-                reranked = [candidates[i] for i in indices]
-                # 补充未被选中的（防止遗漏）
-                remaining = [c for c in candidates if c not in reranked]
-                return reranked + remaining
-        except:
-            pass
-        
-        return candidates
+            from rank_bm25 import BM25Okapi
+            import jieba
+        except ImportError:
+            print("  BM25 不可用，跳过检索")
+            self.bm25 = None
+            return
 
-    def search_by_options(self, question: str, options: dict, doc_ids: list = None, top_k: int = None) -> list:
-        """多查询检索：题干 + 各选项分别检索，合并去重"""
-        top_k = top_k or TOP_K_CHUNKS
-        seen_ids = set()
-        all_chunks = []
-        
-        # 题干检索
-        for chunk in self.search_with_rerank(question, doc_ids, top_k=top_k):
-            cid = chunk.get("chunk_id", id(chunk))
-            if cid not in seen_ids:
-                seen_ids.add(cid)
-                all_chunks.append(chunk)
-        
-        # 各选项检索（补充证据）
-        for opt_key, opt_text in options.items():
-            query = f"{question} {opt_text}"
-            for chunk in self.search_with_rerank(query, doc_ids, top_k=2):
-                cid = chunk.get("chunk_id", id(chunk))
-                if cid not in seen_ids:
-                    seen_ids.add(cid)
-                    all_chunks.append(chunk)
-        
-        return all_chunks
+        tokenized = []
+        for chunk in self.chunks:
+            text = chunk if isinstance(chunk, str) else chunk.get("text", "")
+            tokens = list(jieba.cut(text))
+            tokenized.append(tokens)
+
+        self.bm25 = BM25Okapi(tokenized)
+        print(f"  BM25 索引构建完成 ({len(self.chunks)} 块)")
 
     def get_doc_full_text(self, doc_id: str) -> str:
-        return self.documents.get(doc_id, "")
+        return self.full_texts.get(doc_id, "")
 
-    def get_doc_chunks(self, doc_id: str) -> list:
-        """获取某文档的所有块"""
-        return [c for c in self.chunks if c["doc_id"] == doc_id]
+    def get_chunks_by_doc_ids(self, doc_ids: list) -> list:
+        """获取指定文档的所有 chunks"""
+        return [c for c in self.chunks if isinstance(c, dict) and c.get("doc_id") in doc_ids]
+
+    def search(self, query: str, top_k: int = 10, doc_ids: list = None) -> list:
+        """BM25 检索（兼容旧接口）"""
+        return self.search_bm25(query, top_k=top_k, doc_ids=doc_ids)
+
+    def search_bm25(self, query: str, top_k: int = 10, doc_ids: list = None) -> list:
+        """BM25 检索，可限定文档范围"""
+        if not self.bm25:
+            return []
+
+        import jieba
+        tokens = list(jieba.cut(query))
+        scores = self.bm25.get_scores(tokens)
+
+        # 按分数排序
+        scored_chunks = list(zip(scores, self.chunks))
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+
+        results = []
+        seen = set()
+        for score, chunk in scored_chunks:
+            if score <= 0:
+                break
+            if doc_ids and chunk.get("doc_id") not in doc_ids:
+                continue
+            # 去重
+            text_key = chunk.get("text", "")[:100]
+            if text_key in seen:
+                continue
+            seen.add(text_key)
+            results.append({**chunk, "score": float(score)})
+            if len(results) >= top_k:
+                break
+
+        return results
+
+    def search_with_clause_location(self, question: str, options: dict, doc_ids: list, top_k: int = 8) -> list:
+        """多路召回：BM25 + 选项检索 + 条款精准定位"""
+        all_chunks = []
+        seen = set()
+
+        def add_chunks(chunks):
+            for c in chunks:
+                key = c.get("text", "")[:100]
+                if key not in seen:
+                    seen.add(key)
+                    all_chunks.append(c)
+
+        # 1. BM25 主查询
+        bm25_results = self.search_bm25(question, top_k=top_k, doc_ids=doc_ids if doc_ids else None)
+        add_chunks(bm25_results)
+
+        # 2. 选项检索
+        for opt_key, opt_text in options.items():
+            opt_results = self.search_bm25(f"{question} {opt_text}", top_k=2, doc_ids=doc_ids if doc_ids else None)
+            add_chunks(opt_results)
+
+        # 3. 条款精准定位
+        clause_refs = extract_clause_refs(question + " " + " ".join(options.values()))
+        if clause_refs and doc_ids:
+            for doc_id in doc_ids:
+                full_text = self.get_doc_full_text(doc_id)
+                if full_text:
+                    clause_texts = locate_clauses_in_doc(clause_refs, full_text)
+                    for ref, text in clause_texts.items():
+                        add_chunks([{"doc_id": doc_id, "text": text, "chunk_type": "clause", "clause_ref": ref}])
+
+        return all_chunks[:top_k + 5]
+
+
+class ContextWindowOptimizer:
+    """上下文窗口优化：根据 token 预算动态裁剪证据"""
+
+    def __init__(self, max_context_chars: int = 12000):
+        self.max_chars = max_context_chars
+
+    def optimize(self, evidence_chunks: list, compressed_memory: str = "", max_chars: int = None) -> str:
+        """优化上下文：优先级 压缩记忆 > 条款精准 > BM25高分
+        
+        在 token 预算内最大化有效信息量
+        """
+        max_chars = max_chars or self.max_chars
+        parts = []
+        total = 0
+
+        # 1. 压缩记忆（高优先级，但限制长度）
+        if compressed_memory:
+            mem_len = min(len(compressed_memory), max_chars // 2)
+            mem_text = compressed_memory[:mem_len]
+            parts.append(f"### 文档摘要\n{mem_text}")
+            total += mem_len
+
+        # 2. 条款精准定位（高优先级）
+        clause_chunks = [c for c in evidence_chunks if c.get("chunk_type") == "clause"]
+        for c in clause_chunks:
+            if total >= max_chars:
+                break
+            text = c["text"][:1500]
+            parts.append(f"### 条款定位：{c.get('clause_ref', '?')}\n{text}")
+            total += len(text)
+
+        # 3. BM25 高分块
+        bm25_chunks = sorted(
+            [c for c in evidence_chunks if c.get("chunk_type") != "clause"],
+            key=lambda c: c.get("score", 0), reverse=True
+        )
+        for c in bm25_chunks:
+            if total >= max_chars:
+                break
+            remaining = max_chars - total
+            text = c["text"][:min(800, remaining)]
+            parts.append(f"### 证据（来源：{c.get('doc_id', '?')}）\n{text}")
+            total += len(text)
+
+        return "\n\n".join(parts) if parts else ""

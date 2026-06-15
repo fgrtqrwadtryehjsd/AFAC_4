@@ -24,7 +24,7 @@ class QwenClient:
         self.total_tokens = 0
         self.call_count = 0
 
-    def chat(self, messages: list, temperature: float = 0.1, max_tokens: int = 4096) -> dict:
+    def chat(self, messages: list, temperature: float = 0.1, max_tokens: int = 4096, timeout: float = 120) -> dict:
         """
         调用 Qwen Chat API
         
@@ -32,9 +32,7 @@ class QwenClient:
             messages: OpenAI 格式的消息列表
             temperature: 温度参数
             max_tokens: 最大输出 token 数
-        
-        Returns:
-            {"content": str, "prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+            timeout: 超时秒数（默认120秒）
         """
         for attempt in range(MAX_RETRIES):
             try:
@@ -43,6 +41,7 @@ class QwenClient:
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    timeout=timeout,
                 )
                 
                 content = response.choices[0].message.content

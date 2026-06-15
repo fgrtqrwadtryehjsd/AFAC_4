@@ -9,8 +9,8 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # 模型配置
-MODEL_NAME = "qwen-plus"  # 评测基准模型，可切换为 qwen-max / qwen-turbo
-MODEL_MAX_TOKENS = 131072  # Qwen-plus 最大上下文
+MODEL_NAME = "qwen-plus"  # 压缩记忆驱动，qwen-plus 即可
+MODEL_MAX_TOKENS = 131072
 
 # Token 预算
 TOKEN_BUDGET = 5_000_000
@@ -28,7 +28,7 @@ DOMAINS = ["insurance", "regulatory", "financial_contracts", "financial_reports"
 # 检索配置
 CHUNK_SIZE = 2000      # 每个文本块字符数
 CHUNK_OVERLAP = 200    # 块重叠字符数
-TOP_K_CHUNKS = 5       # 每题检索的 top-k 文本块数
+TOP_K_CHUNKS = 8       # 每题检索的 top-k 文本块数（增加证据量）
 
 # 推理配置
 MAX_RETRIES = 3        # API 调用最大重试次数
