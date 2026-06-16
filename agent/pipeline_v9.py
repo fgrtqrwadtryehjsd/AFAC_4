@@ -88,6 +88,14 @@ def run_a_board():
 
     agent.save_cot_trails()
 
+    # 保存查询Embedding缓存
+    if vector_indexer:
+        vector_indexer.finalize()
+        cache_stats = vector_indexer.get_cache_stats()
+        print(f"  Embedding缓存: API调用{cache_stats['api_calls']}次, "
+              f"命中{cache_stats['cache_hits']}次, "
+              f"磁盘缓存{cache_stats['disk_cache_size']}条")
+
     print(f"\n📊 评测摘要:")
     print(f"  有效答案: {valid}/{len(questions)}")
     print(f"  总 Token: {total_tokens:,}")
