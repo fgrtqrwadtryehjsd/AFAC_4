@@ -1,0 +1,117 @@
+"""V10 流水线 — 逐选项验证Agent (Option-by-Option Verification Agent)
+
+核心范式转变：
+  V9:  Question → Retrieval → Evidence → CoT → Answer (单阶段RAG)
+  V10: Question → Option Decomposition → Per-Option Evidence → Per-Option Verify → Aggregate
+
+关键创新：
+1. 选项独立验证：对ABCD逐个检索+验证，消除position bias
+2. 短文档(≤80K)全文输入，长文档问题驱动动态证据
+3. 证据审查员角色（模型从答案生成器变为审查员）
+4. 多选题必须完成ABCD全部验证后才聚合
+5. 冲突/不足时触发二次检索验证
+6. 证据投票+一致性校验
+"""
+import os
+import json
+from agent.config import QUESTIONS_DIR, RESULTS_DIR, TOKEN_BUDGET
+from agent.qwen_client import QwenClient
+from agent.indexer import DocumentIndex
+from agent.vector_indexer import VectorIndexer
+from agent.reasoner_v10 import ReasoningAgentV10
+from agent.postprocessor import generate_answer_csv_token_stats
+
+
+def load_questions(split: str = "A") -> list:
+    questions = []
+    questions_dir = os.path.join(QUESTIONS_DIR, f"group_{split.lower()}")
+    if not os.path.exists(questions_dir):
+        return questions
+    for filename in sorted(os.listdir(questions_dir)):
+        if not filename.endswith('.json'):
+            continue
+        with open(os.path.join(questions_dir, filename), "r", encoding="utf-8") as f:
+            questions.extend(json.load(f))
+    return questions
+
+
+def run_a_board():
+    print("=" * 60)
+    print("AFAC2026 赛题四 - A 榜评测 V10")
+    print("逐选项验证 Agent (Option-by-Option Verification)")
+    print("范式转变: 答案生成器 → 证据审查员")
+    print("突破: 选项独立验证 + 全文扩展80K + 二次检索")
+    print(f"模型: qwen-plus | Token 预算: {TOKEN_BUDGET:,}")
+    print("=" * 60)
+
+    questions = load_questions("A")
+    print(f"加载了 {len(questions)} 道 A 榜题目")
+
+    print("\n🔍 构建检索索引...")
+    doc_index = DocumentIndex()
+    doc_index.load()
+
+    print("\n🔮 构建语义向量索引...")
+    vector_indexer = VectorIndexer(doc_index)
+
+    qwen = QwenClient()
+    agent = ReasoningAgentV10(qwen, doc_index, vector_indexer, token_budget=TOKEN_BUDGET)
+
+    print(f"\n🧠 开始推理 (逐选项独立验证)...")
+    print("=" * 60)
+
+    results = []
+    for i, q in enumerate(questions):
+        stats = qwen.get_token_stats()
+        if stats["total_tokens"] > TOKEN_BUDGET * 0.95:
+            print(f"\n⚠️ Token 接近上限 ({stats['total_tokens']:,})")
+            for rq in questions[i:]:
+                results.append({"qid": rq["qid"], "answer": ""})
+            break
+
+        print(f"[{i+1}/{len(questions)}]", end="")
+        result = agent.answer_question(q)
+        answer = result["answer"]
+        results.append({"qid": q["qid"], "answer": answer})
+
+        domain = q.get("domain", "")
+        fmt = q.get("answer_format", "")
+        ev_chars = result.get("evidence_chars", 0)
+        total_doc = result.get("total_doc_chars", 0)
+        is_full = result.get("is_full_doc", False)
+        tag = "全文" if is_full else "检索"
+        print(f" {q['qid']} ({domain}/{fmt}) → {answer} "
+              f"[{tag}:证据{ev_chars//1000}K/{total_doc//1000}K]")
+
+    print("\n" + "=" * 60)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    stats = qwen.get_token_stats()
+    total_tokens = stats["total_tokens"]
+    token_score = max(0, min(1, (TOKEN_BUDGET - total_tokens) / TOKEN_BUDGET))
+    valid = sum(1 for r in results if r["answer"])
+
+    output_path = generate_answer_csv_token_stats(
+        results, stats["prompt_tokens"], stats["completion_tokens"], total_tokens)
+
+    agent.save_cot_trails()
+
+    # 保存查询Embedding缓存
+    if vector_indexer:
+        vector_indexer.finalize()
+        cache_stats = vector_indexer.get_cache_stats()
+        print(f"  Embedding缓存: API调用{cache_stats['api_calls']}次, "
+              f"命中{cache_stats['cache_hits']}次, "
+              f"磁盘缓存{cache_stats['disk_cache_size']}条")
+
+    print(f"\n📊 评测摘要:")
+    print(f"  有效答案: {valid}/{len(questions)}")
+    print(f"  总 Token: {total_tokens:,}")
+    print(f"  TokenScore: {token_score:.4f}")
+    print(f"  Card 构建: {agent.memory.card_build_time:.1f}s (零Token)")
+    print(f"  API调用: {stats['call_count']}次")
+    print(f"  ✅ 结果: {output_path}")
+
+
+if __name__ == "__main__":
+    run_a_board()
