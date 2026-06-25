@@ -24,16 +24,22 @@ class QwenClient:
         self.total_tokens = 0
         self.call_count = 0
 
-    def chat(self, messages: list, temperature: float = 0.1, max_tokens: int = 4096, timeout: float = 120) -> dict:
+    def chat(self, messages: list, temperature: float = 0.1, max_tokens: int = 4096,
+             timeout: float = 120, enable_thinking: bool = True) -> dict:
         """
         调用 Qwen Chat API
-        
+
         Args:
             messages: OpenAI 格式的消息列表
             temperature: 温度参数
             max_tokens: 最大输出 token 数
             timeout: 超时秒数（默认120秒）
+            enable_thinking: qwen3 系列是否启用思考模式（默认 True）
         """
+        extra_body = {}
+        if not enable_thinking:
+            extra_body["enable_thinking"] = False
+
         for attempt in range(MAX_RETRIES):
             try:
                 response = self.client.chat.completions.create(
@@ -42,6 +48,7 @@ class QwenClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=timeout,
+                    extra_body=extra_body or None,
                 )
                 
                 content = response.choices[0].message.content

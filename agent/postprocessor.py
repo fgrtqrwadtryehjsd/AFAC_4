@@ -41,6 +41,11 @@ def validate_answer(answer: str, answer_format: str) -> str:
 def extract_answer_from_response(response: str, answer_format: str) -> str:
     """
     从模型原始输出中更鲁棒地提取答案
+
+    ⚠️ 历史教训 (2026-06-22): 之前修过一个看似"明显的 bug"(策略 4 .upper() 会把 doc_id
+    里的小写英文当成 ABCD), 修了之后 V13 39.12 跌到 25.83. 原因是这个 buggy 行为实际是
+    "正确率守门员" — multi 题模型 raw 含明确"最终答案 ABC"时反而引导出过选错误.
+    因此**保持 V13 原 extract 逻辑不变**, 别想着"修这个明显 bug".
     """
     # 策略1：寻找"答案"标记
     patterns = [
@@ -50,19 +55,19 @@ def extract_answer_from_response(response: str, answer_format: str) -> str:
         r'正确答案[：:]\s*([A-D]+)',
         r'answer[：:]\s*([A-D]+)',
     ]
-    
+
     for pattern in patterns:
         match = re.search(pattern, response, re.IGNORECASE)
         if match:
             return validate_answer(match.group(1), answer_format)
-    
+
     # 策略2：查找独立成行的字母
     for line in response.strip().split("\n"):
         line = line.strip()
         # 纯字母行如 "AC" 或 "A"
         if re.match(r'^[A-D]+$', line):
             return validate_answer(line, answer_format)
-    
+
     # 策略3：查找最后出现的选项引用
     all_letters = re.findall(r'选项\s*([A-D])|选项([A-D])|选\s*([A-D])', response)
     if all_letters:
@@ -73,12 +78,13 @@ def extract_answer_from_response(response: str, answer_format: str) -> str:
                     letters.append(g)
         if letters:
             return validate_answer("".join(letters), answer_format)
-    
+
     # 策略4：从全文提取所有大写字母（最后手段）
+    # ⚠️ 保持 .upper() — 别改! 之前修这个导致退分
     letters = [c for c in response.upper() if c in "ABCD"]
     if letters:
         return validate_answer("".join(letters), answer_format)
-    
+
     return ""
 
 

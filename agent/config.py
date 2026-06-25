@@ -9,7 +9,7 @@ DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # 模型配置
-MODEL_NAME = "qwen-plus"  # 压缩记忆驱动，qwen-plus 即可
+MODEL_NAME = "qwen3.6-plus"  # V32+: 强推理，GPQA全球第一，支持thinking模式
 MODEL_MAX_TOKENS = 131072
 
 # Token 预算
