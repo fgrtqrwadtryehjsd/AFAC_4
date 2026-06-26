@@ -538,13 +538,13 @@ class ReasoningAgentV13:
             for c in answer:
                 if c in valid_letters:
                     return c
-            return "A"
+            return "A"  # V13 原行为: 守门员 fallback (实测意外命中率高)
         elif answer_format == "tf":
             if "A" in answer:
                 return "A"
             if "B" in answer:
                 return "B"
-            return "A"
+            return "A"  # V13 原行为: 守门员 fallback
         elif answer_format == "multi":
             letters = sorted(set(c for c in answer if c in valid_letters))
             if len(letters) > 3:

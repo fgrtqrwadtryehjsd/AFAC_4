@@ -51,3 +51,21 @@ models/
 *.log
 tmp/
 temp/
+
+# 临时调试/测试脚本（一次性）
+dry_run_*.py
+dump_*.py
+validate_*.py
+compare_*.py
+diagnose_*.py
+test_*.py
+attribution_*.py
+
+# 临时输出目录
+dry_run_outputs/
+
+# qwen-long 文件 ID 缓存（含账号相关 file-id）
+cache/file_ids.json
+
+# 单个 embedding 查询缓存文件（已批量存在，新增的无需跟踪）
+cache/vectors/query_cache/*.npy
