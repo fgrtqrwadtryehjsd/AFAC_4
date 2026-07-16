@@ -2,6 +2,12 @@
 public_dataset_a.zip
 public_dataset_upload/
 
+# Claude Code 对话导出（本地参考，不入库）
+afac4.txt
+
+# Claude Code 本地会话状态
+.claude/settings.local.json
+
 # 预处理数据（太大）
 processed_data/
 
