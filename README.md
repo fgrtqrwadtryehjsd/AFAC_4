@@ -105,3 +105,29 @@ agent/
 - **A 榜 V43**：~85 对 / ~3.42M token → **预估 Score ≈ 67.6**（V31=48.50, V42=58.87 基础上 +9.1）。
 - tf/mcq 一致 test_A 21→31（+10 净，11 修对 1 回归），multi 54/65（图审计 +8）。
 - 合规（仅 Qwen），代码审核包：`answer.csv` + `evidence.json` + `agent/` + `script/` + `logs/` + `processed_data/` + `requirements.txt` + `README.md`。
+
+## 8. V44 实验记录（claim方向核验 + 靶向grep + 减token，未破70）
+
+V43（84对/66.79）基础上，diff V43 vs test_A(92对参考)定位15处分歧，源文+A/B确认13个d-case（V43错/test_A对）。
+
+### 诊断（6过选multi题）
+过选源分裂：V35 draft 过选3题（fc_a_012/ins_a_010/014）+ 图审计过加3题（fc_a_020/reg_a_017/012）。
+
+### V44修法（agent/reasoner_v44.py，V43子类override multi路径）
+1. multi证据 = V35广域60K + 靶向grep（选项数值/实体，补深位43.24%/292亿/1万元）
+2. PROMPT_MULTI_V44 = PROMPT_MULTI + claim方向核验块（文档归属/公式归属/范围限定/claim否定方向/单位，防draft过选）
+3. _ROUND4_MULTI_V44 = 审计 + claim核验 + 文档顺序标签（防审计过加）
+tf/mcq同V43。
+
+### 实测结果
+- **V44.1（60K基线）**：86对/3.81M token → 66.3分。修对7 multi d-case（fc_a_012/009/020, fin_a_017, ins_a_010, reg_a_007/012）✅，但ins域3回归（ins_a_007 claim过慎删B / 009审计过加B / 011 grep过选AD）+ mcq temperature方差±2，token涨0.4M拉低factor。净≈V43。
+- **V44.3（40K基线+must-include grep）**：失败，仅26对。40K证据稀薄+must-include在res/ins大文档灌噪声→模型全面过选ABCD(46次)/选C(27次)。已弃。
+
+### 教训（第一性原理）
+- **token与准确率强耦合**：减token不能靠砍V35基线（证据稀薄崩准确率）+灌grep噪声（放大过选）。
+- **claim核验prompt在ins域不稳定**：时严（007删B）时松（011过选AD），prompt法难以跨域一致。
+- **mcq有temperature=0.1方差**：±2-3题run-to-run，tf/mcq答案非确定。
+- **合规天花板~66**：V43/V44.1均~66，破70需ins稳定性+token减且不丢证据，当前架构未解。
+- 有效成果：claim核验+靶向grep在fc/fin/reg域稳定修对7 multi d-case，ins域+单选3题+token是剩余瓶颈。
+
+V43（answer_v43.csv，66.79）为合规交付版本。V44代码（reasoner_v44.py/pipeline_v44.py）作实验记录保留。

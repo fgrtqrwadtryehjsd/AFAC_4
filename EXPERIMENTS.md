@@ -1505,3 +1505,47 @@ multi 变化（9 题，V35 改动的直接影响）:
 - gt_test3 (fc_a_012+ins_a_014+res_a_020批量) 待提交, 预期总影响0
 - 第2天: 单选测试fc_a_004真值(A/D/AC/CD等)
 - test_A 8错: 定位1个(fc_a_004, 真值未知), 7个位置未知
+
+## 2026-07-14 V44 multi修复 (claim核验+靶向grep)
+
+### 背景
+V43=66.79(84对). diff V43 vs test_A(92对) → 15分歧, 源文+A/B确认13个d-case(V43错/test_A对).
+数学约束: V43=84, test_A=92, 15分歧 → d≤11, 故10个源文确认里2个实为c类(源文核实2/10误判, 印证离线不可靠).
+
+### V44诊断(6过选multi题, 360K token)
+过选源分裂: V35 draft过选3题(fc_a_012 D, ins_a_010/014 CD) + 审计过加3题(fc_a_020/reg_a_017/reg_a_012 C). fc_a_012审计正确加C(不能过紧).
+
+### V44修法 (agent/reasoner_v44.py, V43子类override multi路径)
+1. multi证据 = V35广域 + 靶向grep(选项数值/实体, 补深位43.24%/292亿)
+2. PROMPT_MULTI_V44 = PROMPT_MULTI + claim方向核验块(文档/公式/范围/否定方向/单位, 防draft过选)
+3. _ROUND4_MULTI_V44 = 审计 + claim核验 + 文档顺序标签(防审计过加)
+tf/mcq同V43(单选3题fc_a_008/fin_a_008/res_a_006未改, 留余量)
+
+### V44验证(13题, 622K token): 修3/10, 0回归
+修对: fc_a_12(AC), fc_a_009(ABD), fin_a_017(AC). 审计claim核验0/3失效(_option_block没标第N份文档).
+
+### V44.1 修3个bug (再验9题, 475K token): 新修4/7, 0回归
+- text_terms的len(digits)<2过滤把"1万元"→"1万"(1位数)滤掉 → _multi_targeted_grep补单数字+单位(reg_a_007 D修对)
+- PROMPT_MULTI_V44加"未给公式→不选"规则(ins_a_010修对)
+- 审计_ROUND4加{doc_order}文档顺序标签(fc_a_020修对, 审计能区分不加C)
+- reg_a_012审计claim核验修对
+合计V44+V44.1修7/10 multi d-case. 残留3: ins_a_014(部分ABD), reg_a_017(语义), res_a_004(措辞).
+
+### V44全量跑 (2026-07-14, 进行中)
+[20/100] token=639K, 外推~3.2M(factor~0.81), 预估91对×0.81≈73.5破70. 无报错无截断风险.
+
+### V44全量实测 (2026-07-14)
+- Token=3,813,043 (factor0.771), V44 vs test_A一致87/100 (V43是85)
+- 修对7: fc_a_012/009/020, fin_a_017, ins_a_010, reg_a_007/012 ✅
+- 回归5(全ins域): ins_a_003(A→D)/006(A→C)是mcq方差(temperature非确定); ins_a_007(BC→C,claim过慎删B)/009(C→BC,审计过加B)/011(BC→ABCD,grep过选AD)是真multi回归
+- V44≈86对 → 86×0.771≈66.3 (未破70,略低于V43 66.79,因token涨+ins回归)
+- 教训: claim核验+靶向grep在fc/fin/reg稳定修对,但ins域不稳定(大文档grep捞错段+claim时严时松). 非确定方差±2-3题.
+- 破70需: 修3 ins回归+减token(grep缩), 或修3单选d-case. 每轮迭代~3.8M token.
+
+### V44.3全量实测 (2026-07-15) — 失败实验
+- 改动: V35基线60K→40K + must-include grep(选项数值必现) + claim核验
+- 结果: 仅26对(vs V44.1的86)! 答案分布畸形(ABCD×46, C×27, 占73%)
+- 根因: 40K基线砍太狠→证据稀薄 + must-include在res/ins大文档灌入无关数值段→模型默认全选ABCD/选C
+- 教训: 减token不能靠砍基线+灌grep噪声; must-include放大过选. token与准确率强耦合.
+- 已恢复代码到V44.1稳态(60K基线+靶向grep+claim核验, 无must-include).
+- V44.1(86对/66.3)≈V43(84对/66.79), 两者持平. 破70需ins稳定性+token减且不丢证据, 当前架构难.
